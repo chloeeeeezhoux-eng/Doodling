@@ -1,0 +1,376 @@
+---
+title: "Untitled"
+output:
+  pdf_document: default
+  html_document: default
+date: "2026-02-24"
+---
+
+```{r load-libraries}
+library(tidyverse)
+library(readxl)
+library(lme4)
+library(emmeans)
+```
+
+```{r load-data}
+df <- read_csv("/Users/xiaoyuzhou/Desktop/Doodling Result.csv")
+
+answer_key <- read_excel("/Users/xiaoyuzhou/Desktop/recall_answer_key.xlsx")
+
+head(df)
+
+print(df)
+
+colnames(df)
+```
+
+```{r pivot-longer}
+
+# pivot longer 
+
+long_df <- df %>%
+  pivot_longer(
+    cols = matches("^(visual|audio)_\\d+$"),
+    names_to = "item",
+    values_to = "response"
+  ) %>%
+  mutate(
+    TaskType = if_else(str_starts(item, "visual_"), "Visual", "Auditory"),
+    QuestionNum = as.integer(str_extract(item, "\\d+")),
+    PassageIndex = ceiling(QuestionNum / 4),  # 1-4 => passage 1; 5-8 => passage 2; 9-12 => passage 3
+    ConditionGroup = if_else(TaskType == "Visual", visual_condition, auditory_condition),
+    response = as.integer(response) # 1 = yes, 2 = no
+  )
+
+# add the passage title
+long_df <- long_df %>%
+  mutate(
+    PassageName = case_when(
+      TaskType == "Visual"   & PassageIndex == 1 ~ "macOS vs. Linux vs. Windows",
+      TaskType == "Visual"   & PassageIndex == 2 ~ "Bash vs. Zsh",
+      TaskType == "Visual"   & PassageIndex == 3 ~ "File systems",
+      TaskType == "Auditory" & PassageIndex == 1 ~ "Package Managers",
+      TaskType == "Auditory" & PassageIndex == 2 ~ "Security models",
+      TaskType == "Auditory" & PassageIndex == 3 ~ "GUI vs. CLI",
+      TRUE ~ NA_character_
+    )
+  )
+
+
+# add doodling type 
+lookup <- tribble(
+  ~TaskType,   ~ConditionGroup, ~PassageIndex, ~PassageName,                          ~doodle_type,
+
+  # Auditory
+  "Auditory",  "A",            1,             "Package Managers",                   "Free",
+  "Auditory",  "A",            2,             "Security models",                    "Structured",
+  "Auditory",  "A",            3,             "GUI vs. CLI",                        "Control",
+
+  "Auditory",  "B",            1,             "Package Managers",                   "Control",
+  "Auditory",  "B",            2,             "Security models",                    "Free",
+  "Auditory",  "B",            3,             "GUI vs. CLI",                        "Structured",
+
+  "Auditory",  "C",            1,             "Package Managers",                   "Structured",
+  "Auditory",  "C",            2,             "Security models",                    "Control",
+  "Auditory",  "C",            3,             "GUI vs. CLI",                        "Free",
+
+  "Auditory",  "D",            1,             "Pcakage Managers",                   "Free",
+  "Auditory",  "D",            2,             "Security models",                    "Control",
+  "Auditory",  "D",            3,             "GUI vs. CLI",                        "Structured",
+
+  # Visual
+  "Visual",    "A",            1,             "macOS vs. Linux vs. Windows",        "Free",
+  "Visual",    "A",            2,             "Bash vs. Zsh",                       "Structured",
+  "Visual",    "A",            3,             "File systems",                       "Control",
+
+  "Visual",    "B",            1,             "macOS vs. Linux vs. Windows",        "Control",
+  "Visual",    "B",            2,             "Bash vs. Zsh",                       "Free",
+  "Visual",    "B",            3,             "File systems",                       "Structured",
+
+  "Visual",    "C",            1,             "macOS vs. Linux vs. Windows",        "Structured",
+  "Visual",    "C",            2,             "Bash vs. Zsh",                       "Control",
+  "Visual",    "C",            3,             "File systems",                       "Free",
+
+  "Visual",    "D",            1,             "macOS vs. Linux vs. Window",         "Control",
+  "Visual",    "D",            2,             "File systems",                       "Free",
+  "Visual",    "D",            3,             "Bash vs. Zsh",                       "Structured"
+)
+
+
+# join the datasets
+
+long_df <- long_df %>%
+  left_join(lookup, by = c("TaskType", "ConditionGroup","PassageIndex")) %>%
+  mutate(
+    doodle_type = factor(doodle_type, levels = c("Control","Free","Structured")),
+    TaskType = factor(TaskType),
+    p_id = factor(p_id)
+  )
+
+# join the answer key and compute accuracy
+long_df <- long_df %>%
+  left_join(answer_key, by = "item") %>%
+  mutate(
+    RecallAcc = as.integer(response == correct_answer)
+  )
+```
+
+
+```{r}
+
+# 1) Summarize accuracy by TaskType × doodle_type
+plot_df <- long_df %>%
+  group_by(TaskType, doodle_type) %>%
+  summarise(
+    n = n(),
+    acc = mean(RecallAcc, na.rm = TRUE),
+    se = sqrt(acc * (1 - acc) / n),   # binomial SE for proportions
+    .groups = "drop"
+  )
+
+# 2) Plot
+ggplot(plot_df, aes(x = doodle_type, y = acc)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = acc - se, ymax = acc + se), width = 0.2) +
+  facet_wrap(~ TaskType) +
+  labs(
+    x = "Doodling Type",
+    y = "Recall Accuracy (Proportion Correct)",
+    title = "Recall Accuracy by Doodling Type, Faceted by Task Type"
+  ) +
+  coord_cartesian(ylim = c(0, 1))
+```
+
+
+```{r}
+pp_df <- long_df %>%
+  group_by(p_id, TaskType, doodle_type, visual_condition) %>%
+  summarise(acc = mean(RecallAcc, na.rm = TRUE), .groups = "drop")
+
+ggplot(pp_df, aes(x = doodle_type, y = acc, color = visual_condition)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.15, height = 0, alpha = 0.6) +
+  facet_wrap(~ TaskType) +
+  labs(
+    x = "Doodling Type",
+    y = "Participant Mean Recall Accuracy",
+    title = "Participant-Level Recall Accuracy by Doodling Type"
+  ) +
+  coord_cartesian(ylim = c(0, 1))
+```
+
+
+```{r}
+pp_df %>%
+  group_by(TaskType, doodle_type) %>%
+  summarise(sd_acc = sd(acc))
+
+
+pp_df %>%
+  group_by(TaskType, doodle_type) %>%
+  summarise(mean_acc = mean(acc))
+```
+
+- as the participants number increases the mean_acc increases and the sd decreases. 
+
+```{r}
+model1 <- glmer(RecallAcc ~ TaskType * doodle_type + (1 | p_id),
+      family = binomial,
+      data = long_df)
+
+summary(model1)
+
+model2 <- anova(RecallAcc ~ doodle_type + (1 | p_id),
+      data = long_df)
+
+summary(model2)
+```
+
+# Learner's Type 
+
+```{r}
+visual_verbal_items <- c(
+   "learn_type_3", "learn_type_7", "learn_type_11", "learn_type_15",
+  "learn_type_19", "learn_type_23", "learn_type_27", "learn_type_31",
+  "learn_type_35", "learn_type_39", "learn_type_43")
+
+# change the value 
+df <- df %>% 
+  mutate(
+    across(
+      all_of(visual_verbal_items),
+      ~ case_when(
+        . == 1 ~ -1,   # 1 = Visual
+        . == 2 ~  1,   # 2 = Verbal
+        TRUE ~ NA_real_
+      ),
+      .names = "{.col}_scored"
+    )
+  ) %>% 
+  rowwise() %>% 
+  mutate(
+    visual_verbal_score = sum(c_across(ends_with("_scored")), na.rm = FALSE)
+  ) %>% 
+  ungroup()
+
+long_df <- long_df %>%
+  mutate(p_id = as.character(p_id)) %>%
+  left_join(
+    df %>%
+      mutate(p_id = as.character(p_id)) %>%
+      select(p_id, visual_verbal_score),
+    by = "p_id"
+  )
+```
+
+# Model 2 with leraner's type
+```{r}
+model2 <- glmer(
+  RecallAcc ~ TaskType * doodle_type * visual_verbal_score + (1 | p_id),
+  family = binomial,
+  data = long_df
+)
+
+print(model2)
+summary(model2)
+```
+
+```{r}
+long_df <- long_df %>%
+  mutate(
+    visual_verbal_c = scale(visual_verbal_score, center = TRUE, scale = FALSE)[,1]
+  )
+
+model3 <- glmer(
+  RecallAcc ~ TaskType * doodle_type * visual_verbal_c + (1 | p_id),
+  family = binomial,
+  data = long_df,
+  control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+)
+
+vv_sd <- sd(long_df$visual_verbal_c, na.rm = TRUE)
+
+vv_vals <- c(-vv_sd, 0, vv_sd)
+vv_vals
+
+
+emm3 <- emmeans(
+  model3,
+  ~ doodle_type * TaskType | visual_verbal_c,
+  at = list(visual_verbal_c = vv_vals),
+  type = "response"
+)
+
+emm3_df <- as.data.frame(emm3)
+emm3_df
+
+emm3_df <- emm3_df %>%
+  mutate(
+    learner_group = case_when(
+      visual_verbal_c == vv_vals[1] ~ "Low verbal / more visual",
+      visual_verbal_c == vv_vals[2] ~ "Average",
+      visual_verbal_c == vv_vals[3] ~ "High verbal / less visual"
+    )
+  )
+
+ggplot(emm3_df, aes(x = doodle_type, y = prob, color = TaskType, group = TaskType)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ learner_group) +
+  labs(
+    x = "Doodling Type",
+    y = "Predicted Recall Probability",
+    color = "Task Type",
+    title = "Three-Way Interaction: Task Type × Doodling Type × Learner Type"
+  ) +
+  coord_cartesian(ylim = c(0, 1))
+```
+
+
+# MPI 
+
+```{r}
+# reverse code 
+mpi_items <- paste0("MPI_", 1:14)
+
+reverse_items <- c("MPI_5", "MPI_6", "MPI_8", "MPI_10", 
+                   "MPI_11", "MPI_13", "MPI_14")
+
+df <- df %>%
+  mutate(
+    across(all_of(reverse_items), ~ 6 - .)
+  )
+```
+
+
+```{r}
+# sum
+df <- df %>%
+  rowwise() %>%
+  mutate(
+    MPI_score = sum(c_across(all_of(mpi_items)), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# merge to long dataset 
+long_df <- long_df %>%
+  mutate(p_id = as.character(p_id)) %>%
+  left_join(
+    df %>%
+      mutate(p_id = as.character(p_id)) %>%
+      select(p_id, MPI_score),
+    by = "p_id"
+  )
+
+```
+
+
+```{r}
+# center the MPI score 
+long_df <- long_df %>%
+  mutate(
+    MPI_c = scale(MPI_score, center = TRUE, scale = FALSE)[,1]
+  )
+```
+
+```{r}
+# model with MPI score 
+model_mpi <- glmer(
+  RecallAcc ~ TaskType * doodle_type * MPI_c + (1 | p_id),
+  family = binomial,
+  data = long_df
+)
+
+summary(model_mpi)
+```
+
+```{r}
+# get prediction
+mpi_range <- seq(min(long_df$MPI_c), max(long_df$MPI_c), length.out = 50)
+
+emm_mpi <- emmeans(
+  model_mpi,
+  ~ doodle_type * TaskType | MPI_c,
+  at = list(MPI_c = mpi_range),
+  type = "response"
+)
+
+emm_mpi_df <- as.data.frame(emm_mpi)
+```
+
+```{r}
+ggplot(emm_mpi_df, aes(x = MPI_c, y = prob, color = doodle_type)) +
+  geom_line(size = 1) +
+  facet_wrap(~ TaskType) +
+  labs(
+    x = "Multitasking Preference (MPI Centered)",
+    y = "Predicted Recall Probability",
+    color = "Doodling Type",
+    title = "Model-Predicted Interaction: MPI × Doodling × Task"
+  ) +
+  coord_cartesian(ylim = c(0, 1))
+```
+
+
+
